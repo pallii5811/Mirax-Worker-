@@ -8,6 +8,10 @@ dist/
 _full_staging/
 _demo_staging/
 do_scraper_bundle/
+_demo_dist/
+_full_dist/
+*.zip
+*.exe
 .env
 .env.local
 *.log
