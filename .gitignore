@@ -1,0 +1,14 @@
+﻿venv/
+.venv/
+node_modules/
+.next/
+__pycache__/
+build/
+dist/
+_full_staging/
+_demo_staging/
+do_scraper_bundle/
+.env
+.env.local
+*.log
+*.pdf
