@@ -1099,13 +1099,14 @@ def main() -> None:
                 pass
 
             rows = []
+            expected_pending_status = "pending"
             if mode in {"all", "user"}:
-                # Priority 1: user jobs (most recent first)
+                # Priority 1: realtime user jobs (most recent first)
+                expected_pending_status = "pending_user" if mode == "user" else expected_pending_status
                 q = (
                     supabase.table("searches")
                     .select("*")
-                    .eq("status", "pending")
-                    .not_.is_("user_id", "null")
+                    .eq("status", "pending_user")
                 )
                 if mode == "user" and user_recent_minutes > 0:
                     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=user_recent_minutes)).isoformat()
@@ -1123,12 +1124,12 @@ def main() -> None:
                     supabase.table("searches")
                     .select("*")
                     .eq("status", "pending")
-                    .is_("user_id", "null")
                     .order("created_at", desc=True)
                     .limit(1)
                     .execute()
                 )
                 rows = getattr(resp, "data", None) or []
+                expected_pending_status = "pending"
 
             if not rows:
                 time.sleep(4)
@@ -1172,7 +1173,7 @@ def main() -> None:
                     }
                 )
                 .eq("id", job_id)
-                .eq("status", "pending")
+                .eq("status", expected_pending_status)
                 .execute()
             )
 
