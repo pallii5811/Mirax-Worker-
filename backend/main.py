@@ -1340,7 +1340,7 @@ def _scrape_google_maps_sync(category: str, city: str, zone: Optional[str] = Non
                 # Scroll feed to load more results
                 # Build a larger pool to bypass lazy-loading, then shuffle and sample for variety.
                 pool_target = 100
-                cap_new = 60
+                cap_new = 500
                 if _demo_city and _demo_max_results > 0:
                     cap_new = _demo_max_results
                 pool_target = max(pool_target, cap_new, 120)
