@@ -8,7 +8,7 @@ import re
 import argparse
 import random
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -969,6 +969,12 @@ def main() -> None:
         help="Pausa (secondi) tra un job e il successivo.",
     )
     parser.add_argument(
+        "--user-recent-minutes",
+        type=int,
+        default=10,
+        help="In --mode user, considera solo job creati negli ultimi N minuti.",
+    )
+    parser.add_argument(
         "--once",
         action="store_true",
         help="Esegue un solo ciclo del worker (un job pending se presente) e poi termina.",
@@ -1076,6 +1082,13 @@ def main() -> None:
         cooldown_s = int(getattr(args, "cooldown", 20) or 20)
     except Exception:
         cooldown_s = 20
+    try:
+        user_recent_minutes = int(getattr(args, "user_recent_minutes", 10) or 10)
+    except Exception:
+        user_recent_minutes = 10
+
+    if user_recent_minutes < 0:
+        user_recent_minutes = 0
 
     while True:
         try:
@@ -1088,12 +1101,17 @@ def main() -> None:
             rows = []
             if mode in {"all", "user"}:
                 # Priority 1: user jobs (most recent first)
-                resp = (
+                q = (
                     supabase.table("searches")
                     .select("*")
                     .eq("status", "pending")
                     .not_.is_("user_id", "null")
-                    .order("created_at", desc=True)
+                )
+                if mode == "user" and user_recent_minutes > 0:
+                    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=user_recent_minutes)).isoformat()
+                    q = q.gte("created_at", cutoff)
+                resp = (
+                    q.order("created_at", desc=True)
                     .limit(1)
                     .execute()
                 )

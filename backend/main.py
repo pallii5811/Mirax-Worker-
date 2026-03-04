@@ -2045,6 +2045,10 @@ async def start_job(payload: StartJobRequest, background: BackgroundTasks, reque
                 "location": payload.city,
                 "results": None,
             }
+            try:
+                row["created_at"] = datetime.now(timezone.utc).isoformat()
+            except Exception:
+                pass
             if payload.zone:
                 row["zone"] = payload.zone
             if user_id:
