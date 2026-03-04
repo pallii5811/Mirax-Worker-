@@ -956,6 +956,19 @@ def main() -> None:
         help="Numero massimo di lead per job (0 = default scraper).",
     )
     parser.add_argument(
+        "--mode",
+        type=str,
+        default="all",
+        choices=["all", "user", "backlog"],
+        help="Selezione job: all=user+backlog, user=solo user_id non nullo, backlog=solo user_id nullo.",
+    )
+    parser.add_argument(
+        "--cooldown",
+        type=int,
+        default=20,
+        help="Pausa (secondi) tra un job e il successivo.",
+    )
+    parser.add_argument(
         "--once",
         action="store_true",
         help="Esegue un solo ciclo del worker (un job pending se presente) e poi termina.",
@@ -1056,6 +1069,14 @@ def main() -> None:
     print(f"[worker_supabase] Supabase URL: {SUPABASE_URL}")
     print("[worker_supabase] Polling tabella: searches (status=pending) ogni 4 secondi")
 
+    mode = str(getattr(args, "mode", "all") or "all").strip().lower()
+    if mode not in {"all", "user", "backlog"}:
+        mode = "all"
+    try:
+        cooldown_s = int(getattr(args, "cooldown", 20) or 20)
+    except Exception:
+        cooldown_s = 20
+
     while True:
         try:
             # Desync workers to reduce stampedes / race windows.
@@ -1064,25 +1085,28 @@ def main() -> None:
             except Exception:
                 pass
 
-            # Priority 1: user jobs (most recent first)
-            resp = (
-                supabase.table("searches")
-                .select("*")
-                .eq("status", "pending")
-                .not_.is_("user_id", "null")
-                .order("created_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-            rows = getattr(resp, "data", None) or []
-
-            # Priority 2: if no user jobs, take from backlog (oldest first)
-            if not rows:
+            rows = []
+            if mode in {"all", "user"}:
+                # Priority 1: user jobs (most recent first)
                 resp = (
                     supabase.table("searches")
                     .select("*")
                     .eq("status", "pending")
-                    .order("created_at", desc=False)
+                    .not_.is_("user_id", "null")
+                    .order("created_at", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+                rows = getattr(resp, "data", None) or []
+
+            # Backlog selection
+            if (not rows) and mode in {"all", "backlog"}:
+                resp = (
+                    supabase.table("searches")
+                    .select("*")
+                    .eq("status", "pending")
+                    .is_("user_id", "null")
+                    .order("created_at", desc=True)
                     .limit(1)
                     .execute()
                 )
@@ -1163,7 +1187,7 @@ def main() -> None:
             ).eq("id", job_id).execute()
 
             # Cooldown between jobs (avoid hammering and give browser/OS time to settle)
-            time.sleep(20)
+            time.sleep(max(0, cooldown_s))
 
             if bool(getattr(args, "once", False)):
                 print("[worker_supabase] --once richiesto: termino dopo 1 job.")
