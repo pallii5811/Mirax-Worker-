@@ -9,3 +9,4 @@ colorama==0.4.6
 requests==2.32.3
 fpdf2==2.7.9
 python-whois==0.9.5
+supabase==2.18.0

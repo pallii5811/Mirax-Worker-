@@ -39,6 +39,7 @@ if os.name == "nt":
 import httpx
 from bs4 import BeautifulSoup
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -58,6 +59,11 @@ try:
     from playwright.sync_api import sync_playwright
 except Exception:  # pragma: no cover
     sync_playwright = None
+
+try:
+    from supabase import create_client  # type: ignore
+except Exception:  # pragma: no cover
+    create_client = None  # type: ignore
 
 
 _LEAD_HISTORY_LOCK = threading.Lock()
@@ -429,6 +435,82 @@ class StartJobRequest(BaseModel):
     category: str = Field(min_length=2, max_length=120)
     city: str = Field(min_length=2, max_length=120)
     zone: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+def _get_supabase_client():
+    """Best-effort Supabase client builder.
+
+    Returns None if Supabase is not configured or supabase-py is not installed.
+    """
+
+    if create_client is None:
+        return None
+
+    url = (os.getenv("SUPABASE_URL") or "").strip()
+    key = (
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_KEY")
+        or ""
+    ).strip()
+    if not url or not key:
+        return None
+
+    try:
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+def _map_search_row_to_job_status(row: Dict[str, Any]) -> "JobStatus":
+    status = str((row or {}).get("status") or "").strip().lower()
+    state: JobState
+    progress = 0
+    message = "—"
+
+    if status == "pending":
+        state = "queued"
+        progress = 0
+        message = "In coda"
+    elif status == "processing":
+        state = "running"
+        progress = 35
+        message = "In lavorazione"
+    elif status == "completed":
+        state = "done"
+        progress = 100
+        message = "Completato"
+    elif status == "error":
+        state = "error"
+        progress = 100
+        message = "Errore"
+    else:
+        state = "queued"
+        progress = 0
+        message = f"Stato: {status or 'unknown'}"
+
+    results = (row or {}).get("results")
+    results_count = len(results) if isinstance(results, list) else None
+    err = None
+    if status == "error" and isinstance(results, dict):
+        err = str(results.get("error") or "") or None
+
+    started_at = None
+    try:
+        started_at = float(time.time())
+    except Exception:
+        started_at = time.time()
+
+    return JobStatus(
+        id=str((row or {}).get("id") or ""),
+        state=state,
+        progress=progress,
+        message=message,
+        started_at=started_at,
+        finished_at=None,
+        error=err,
+        results_count=results_count,
+    )
 
 
 class AuditSignals(BaseModel):
@@ -1939,7 +2021,7 @@ async def health() -> Dict[str, str]:
 
 
 @app.post("/jobs", response_model=JobStatus)
-async def start_job(payload: StartJobRequest, background: BackgroundTasks) -> JobStatus:
+async def start_job(payload: StartJobRequest, background: BackgroundTasks, request: Request) -> JobStatus:
     if _demo_city:
         if payload.city.strip() != _demo_city:
             raise HTTPException(status_code=400, detail=f"DEMO: città consentita: {_demo_city}")
@@ -1950,6 +2032,37 @@ async def start_job(payload: StartJobRequest, background: BackgroundTasks) -> Jo
                 detail=f"DEMO: categorie consentite: {', '.join(_demo_categories)}",
             )
 
+    # Preferred path (production): enqueue into Supabase 'searches' table and let worker_supabase do the work.
+    supabase = _get_supabase_client()
+    if supabase is not None:
+        try:
+            header_user_id = (request.headers.get("x-user-id") or "").strip() or None
+            user_id = (payload.user_id or "").strip() or header_user_id
+
+            row = {
+                "status": "pending",
+                "category": payload.category,
+                "location": payload.city,
+                "results": None,
+            }
+            if payload.zone:
+                row["zone"] = payload.zone
+            if user_id:
+                row["user_id"] = user_id
+
+            resp = supabase.table("searches").insert(row).execute()
+            data = getattr(resp, "data", None)
+            if isinstance(data, list) and data:
+                return _map_search_row_to_job_status(data[0])
+            raise RuntimeError("Supabase insert returned empty data")
+        except Exception as e:
+            # Fall back to in-memory behavior in case of any Supabase issue.
+            try:
+                print("[backend] WARNING: enqueue Supabase fallita, fallback in-memory:", str(e))
+            except Exception:
+                pass
+
+    # Fallback path (dev/standalone): run job in-process and store results in memory
     job_id = str(uuid.uuid4())
     job = Job(id=job_id, category=payload.category, city=payload.city, zone=payload.zone)
     JOBS[job_id] = job
@@ -1968,6 +2081,16 @@ async def start_job(payload: StartJobRequest, background: BackgroundTasks) -> Jo
 
 @app.get("/jobs/{job_id}", response_model=JobStatus)
 async def get_job(job_id: str) -> JobStatus:
+    supabase = _get_supabase_client()
+    if supabase is not None:
+        try:
+            resp = supabase.table("searches").select("*").eq("id", job_id).limit(1).execute()
+            rows = getattr(resp, "data", None) or []
+            if rows:
+                return _map_search_row_to_job_status(rows[0])
+        except Exception:
+            pass
+
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -1985,6 +2108,35 @@ async def get_job(job_id: str) -> JobStatus:
 
 @app.get("/jobs/{job_id}/results", response_model=List[BusinessResult])
 async def get_results(job_id: str) -> List[BusinessResult]:
+    supabase = _get_supabase_client()
+    if supabase is not None:
+        try:
+            resp = (
+                supabase.table("searches")
+                .select("status,results")
+                .eq("id", job_id)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(resp, "data", None) or []
+            if not rows:
+                raise HTTPException(status_code=404, detail="Job not found")
+
+            row = rows[0] or {}
+            status = str(row.get("status") or "").strip().lower()
+            if status != "completed":
+                # Keep API consistent: results are only available when completed.
+                raise HTTPException(status_code=409, detail=f"Job not completed (status={status})")
+
+            results = row.get("results")
+            if isinstance(results, list):
+                return results  # type: ignore[return-value]
+            return []
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
