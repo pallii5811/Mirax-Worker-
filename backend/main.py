@@ -490,7 +490,7 @@ def _map_search_row_to_job_status(row: Dict[str, Any]) -> "JobStatus":
         message = f"Stato: {status or 'unknown'}"
 
     results = (row or {}).get("results")
-    results_count = len(results) if isinstance(results, list) else None
+    results_count = len(results) if isinstance(results, list) else 0
     err = None
     if status == "error" and isinstance(results, dict):
         err = str(results.get("error") or "") or None
