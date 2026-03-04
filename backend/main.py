@@ -963,8 +963,7 @@ def _scrape_google_maps_sync(category: str, city: str, zone: Optional[str] = Non
             results: List[Dict[str, Any]] = []
             try:
                 browser = p.chromium.launch(
-                    channel="chrome",
-                    headless=False,
+                    headless=True,
                     args=[
                         "--lang=it-IT",
                         "--disable-blink-features=AutomationControlled",
