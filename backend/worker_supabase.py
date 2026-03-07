@@ -207,8 +207,18 @@ async def process_single_url(url: str) -> Dict[str, Any]:
     except Exception:
         nome = None
 
-    has_pixel = bool(getattr(audit, "has_facebook_pixel", False))
-    has_gtm = bool(getattr(audit, "has_gtm", False))
+    # Match worker heuristics: supplement audit flags with raw HTML checks.
+    raw_lower = html_home.lower() if html_home else ""
+    has_pixel = bool(getattr(audit, "has_facebook_pixel", False)) or (
+        "fbevents.js" in raw_lower
+        or "connect.facebook.net" in raw_lower
+        or "fbq('init'" in raw_lower
+        or "fbq(\"init\"" in raw_lower
+    )
+    has_gtm = bool(getattr(audit, "has_gtm", False)) or (
+        "gtm.js" in raw_lower
+        or bool(re.search(r"\bGTM-[A-Z0-9]+\b", html_home or "", flags=re.IGNORECASE))
+    )
     has_ssl = bool(getattr(audit, "has_ssl", False))
     has_google_ads = bool(report.get("has_google_ads"))
 
@@ -269,6 +279,7 @@ async def process_single_url(url: str) -> Dict[str, Any]:
         "has_ssl": has_ssl,
         "seo_errors": seo_errors,
         "load_speed_seconds": load_speed_seconds,
+        "tech_stack": _tech_stack,
     }
 
 
