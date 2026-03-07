@@ -12,6 +12,14 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
+try:
+    from fastapi import FastAPI, HTTPException
+    from pydantic import BaseModel
+except Exception:  # pragma: no cover
+    FastAPI = None  # type: ignore
+    HTTPException = None  # type: ignore
+    BaseModel = object  # type: ignore
+
 # Ensure imports used by backend/main.py (e.g. `import audit_engine`) work even when
 # this worker is launched from the repo root.
 _BACKEND_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -22,6 +30,9 @@ for _p in (_REPO_ROOT, _BACKEND_DIR):
 
 
 _CORE_NORMALIZE_PHONE = None
+
+
+app = FastAPI() if FastAPI is not None else None
 
 
 def normalize_phone_italy(value: Optional[str]) -> Optional[str]:
@@ -112,6 +123,121 @@ def _extract_first_social_link(html: Optional[str], kind: str) -> Optional[str]:
         return None
     url = (m.group(0) or "").strip().rstrip(").,;\"")
     return url or None
+
+
+async def process_single_url(url: str) -> Dict[str, Any]:
+    # Defensive sys.path setup (in case this function is invoked in isolation)
+    for _p in (_REPO_ROOT, _BACKEND_DIR):
+        if _p and _p not in sys.path:
+            sys.path.insert(0, _p)
+
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("Missing url")
+
+    url = url.strip()
+
+    try:
+        from backend import main as core  # type: ignore
+    except Exception as e:
+        raise RuntimeError(f"Cannot import backend.main: {e}")
+
+    audit_fn = getattr(core, "audit_website_with_status", None)
+    normalize_website = getattr(core, "normalize_website", None)
+    if not callable(audit_fn) or not callable(normalize_website):
+        raise RuntimeError("audit_website_with_status/normalize_website missing")
+
+    website_norm = normalize_website(url) or url
+
+    (
+        audit,
+        _tech_stack,
+        _load_speed_s,
+        _domain_creation_date,
+        _domain_expiration_date,
+        email,
+        _website_http_status,
+        _website_error,
+        _website_html,
+        _website_error_line,
+        _website_error_hint,
+    ) = await audit_fn(website_norm)
+
+    try:
+        from backend.audit_engine import run_technical_audit  # type: ignore
+    except Exception as e:
+        raise RuntimeError(f"Cannot import backend.audit_engine.run_technical_audit: {e}")
+
+    report: Dict[str, Any] = await asyncio.to_thread(run_technical_audit, website_norm)
+
+    has_pixel = bool(getattr(audit, "has_facebook_pixel", False))
+    has_gtm = bool(getattr(audit, "has_gtm", False))
+    has_ssl = bool(getattr(audit, "has_ssl", False))
+    has_google_ads = bool(report.get("has_google_ads"))
+
+    seo_errors: List[Dict[str, Any]] = []
+    try:
+        issues = report.get("issues")
+        if isinstance(issues, list):
+            for it in issues:
+                if not isinstance(it, dict):
+                    continue
+                code = str(it.get("code") or "").strip().upper()
+                if not code.startswith("SEO_"):
+                    continue
+                seo_errors.append(
+                    {
+                        "code": it.get("code"),
+                        "severity": it.get("severity"),
+                        "message": it.get("message"),
+                        "line": it.get("line"),
+                    }
+                )
+    except Exception:
+        seo_errors = []
+
+    load_speed_seconds = None
+    try:
+        if report.get("load_speed_seconds") is not None:
+            load_speed_seconds = float(report.get("load_speed_seconds"))
+    except Exception:
+        load_speed_seconds = None
+
+    telefono = None
+    try:
+        telefono = report.get("phone")
+    except Exception:
+        telefono = None
+
+    return {
+        "nome": None,
+        "sito": website_norm,
+        "telefono": telefono,
+        "email": email,
+        "indirizzo": None,
+        "citta": None,
+        "categoria": None,
+        "has_pixel": has_pixel,
+        "has_gtm": has_gtm,
+        "has_google_ads": has_google_ads,
+        "has_ssl": has_ssl,
+        "seo_errors": seo_errors,
+        "load_speed_seconds": load_speed_seconds,
+    }
+
+
+if app is not None:
+    class _AuditUrlRequest(BaseModel):
+        url: str
+
+
+    @app.post("/audit-url")
+    async def audit_url(payload: _AuditUrlRequest) -> Dict[str, Any]:
+        try:
+            return await process_single_url(payload.url)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 async def _scrape_single_place_fallback(category: str, location: str, zone: Optional[str]) -> List[Dict[str, Any]]:
