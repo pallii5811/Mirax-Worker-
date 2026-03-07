@@ -186,7 +186,10 @@ async def process_single_url(url: str) -> Dict[str, Any]:
             if email_match:
                 result["email"] = email_match.group(0)
             else:
-                result["email"] = await asyncio.to_thread(deep_scrape_email_from_website, url)
+                result["email"] = await asyncio.wait_for(
+                    deep_scrape_email_from_website(url, html_home=html),
+                    timeout=12,
+                )
             
             # Extract phone
             phone_match = re.search(r'(\+39[\s.]?)?(0\d{1,3}[\s.\-\/]\d{3,8}|3\d{2}[\s.\-]\d{6,7}|\+39\s*3\d{9})', html)
