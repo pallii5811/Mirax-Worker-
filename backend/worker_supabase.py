@@ -221,10 +221,7 @@ async def process_single_url(url: str) -> Dict[str, Any]:
     # Fallback: raw HTML regex for Italian phone formats with dots/spaces
     if not (telefono or "").strip():
         try:
-            phone_match = re.search(
-                r"(\+39[\s.]?)?[\d]{3}[\s.][\d]{3,4}[\s.][\d]{3,4}",
-                html if isinstance(html, str) else "",
-            )
+            phone_match = re.search(r'(\+39[\s.]?)?3\d{2}[\s.]?\d{6,7}|(\+39[\s.]?)?\d{2,3}[\s.]?\d{3,4}[\s.]?\d{3,4}', html)
             if phone_match:
                 telefono = (phone_match.group(0) or "").strip() or None
         except Exception:
