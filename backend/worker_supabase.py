@@ -157,7 +157,7 @@ async def process_single_url(url: str) -> Dict[str, Any]:
         email,
         _website_http_status,
         _website_error,
-        _website_html,
+        html,
         _website_error_line,
         _website_error_hint,
     ) = await audit_fn(website_norm)
@@ -167,57 +167,44 @@ async def process_single_url(url: str) -> Dict[str, Any]:
     except Exception as e:
         raise RuntimeError(f"Cannot import backend.audit_engine.run_technical_audit: {e}")
 
+    # 2) Technical audit (SSL, SEO, speed, Google Ads, phone)
     report: Dict[str, Any] = await asyncio.to_thread(run_technical_audit, website_norm)
 
-    html_home = _website_html if isinstance(_website_html, str) else ""
+    # 3) Deep email fallback (contact pages)
+    if not (email or "").strip():
+        try:
+            deep_fn = getattr(core, "deep_scrape_email_from_website", None)
+            if callable(deep_fn):
+                email = await deep_fn(website_norm)
+        except Exception:
+            pass
 
-    # Extract name from <title>
+    # 4) Extract nome from HTML <title> and clean common suffixes
+    html_home = html if isinstance(html, str) else ""
     nome = None
     try:
         m = re.search(r"<title[^>]*>(.*?)</title>", html_home, flags=re.IGNORECASE | re.DOTALL)
         if m:
             t = re.sub(r"\s+", " ", (m.group(1) or "")).strip()
             if t:
-                nome = t
+                # Strip common "Home" suffixes like "- Home", "| Home", etc.
+                t = re.sub(r"\s*(?:\-|\||—|–)\s*home\s*$", "", t, flags=re.IGNORECASE).strip()
+                t = re.sub(r"\s*(?:\-|\||—|–)\s*homepage\s*$", "", t, flags=re.IGNORECASE).strip()
+                t = re.sub(r"\s*(?:\-|\||—|–)\s*home page\s*$", "", t, flags=re.IGNORECASE).strip()
+                nome = t or None
     except Exception:
         nome = None
-
-    # Extract phone from HTML using the same safe regex strategy used by audit_engine.
-    telefono = None
-    try:
-        from backend.audit_engine import extract_phone_safe_from_html  # type: ignore
-
-        existing_phone = None
-        try:
-            existing_phone = report.get("phone") if isinstance(report, dict) else None
-        except Exception:
-            existing_phone = None
-        telefono = extract_phone_safe_from_html(html_home or "", existing_phone=existing_phone)
-    except Exception:
-        telefono = None
-
-    # Email extraction from HTML (fast) + fallback deep scrape on contact pages.
-    try:
-        extract_email_from_html = getattr(core, "extract_email_from_html", None)
-        if callable(extract_email_from_html):
-            em2 = extract_email_from_html(html_home or "")
-            if em2:
-                email = em2
-    except Exception:
-        pass
-
-    if not email:
-        try:
-            deep_fn = getattr(core, "deep_scrape_email_from_website", None)
-            if callable(deep_fn):
-                email = await deep_fn(website_norm, html_home=html_home or None)
-        except Exception:
-            pass
 
     has_pixel = bool(getattr(audit, "has_facebook_pixel", False))
     has_gtm = bool(getattr(audit, "has_gtm", False))
     has_ssl = bool(getattr(audit, "has_ssl", False))
     has_google_ads = bool(report.get("has_google_ads"))
+
+    telefono = None
+    try:
+        telefono = report.get("phone")
+    except Exception:
+        telefono = None
 
     seo_errors: List[Dict[str, Any]] = []
     try:
