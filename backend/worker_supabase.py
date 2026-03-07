@@ -127,7 +127,7 @@ def _extract_first_social_link(html: Optional[str], kind: str) -> Optional[str]:
 
 async def process_single_url(url: str) -> Dict[str, Any]:
     import re
-    from backend.main import audit_from_html, fetch_homepage_html, deep_scrape_email_from_website
+    from backend.main import audit_from_html, deep_scrape_email_from_website
     from backend.audit_engine import run_technical_audit
     
     result = {
