@@ -148,10 +148,20 @@ async def process_single_url(url: str) -> Dict[str, Any]:
             pixel_found = False
             gtm_found = False
             requests_log = []
+            page_title = None
             
             page.on("request", lambda req: requests_log.append(req.url))
             
-            await page.goto(url, timeout=15000, wait_until="networkidle")
+            await page.goto(url, timeout=20000, wait_until="domcontentloaded")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(1500)
+            try:
+                page_title = await page.title()
+            except Exception:
+                page_title = None
             html = await page.content()
             await browser.close()
             
@@ -197,9 +207,14 @@ async def process_single_url(url: str) -> Dict[str, Any]:
                 result["telefono"] = phone_match.group(0).strip()
             
             # Extract nome from title
-            title_match = re.search(r'<title[^>]*>([^<]+)</title>', html, re.IGNORECASE)
-            if title_match:
-                nome = title_match.group(1).strip()
+            nome = None
+            if isinstance(page_title, str) and page_title.strip():
+                nome = page_title.strip()
+            else:
+                title_match = re.search(r'<title[^>]*>([^<]+)</title>', html, re.IGNORECASE)
+                if title_match:
+                    nome = title_match.group(1).strip()
+            if isinstance(nome, str) and nome.strip():
                 for suffix in [' - Home', ' | Home', ' – Home', ' - Benvenuto', ' | Benvenuto']:
                     nome = nome.replace(suffix, '')
                 result["nome"] = nome.strip()
