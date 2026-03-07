@@ -126,224 +126,106 @@ def _extract_first_social_link(html: Optional[str], kind: str) -> Optional[str]:
 
 
 async def process_single_url(url: str) -> Dict[str, Any]:
-    # Defensive sys.path setup (in case this function is invoked in isolation)
-    for _p in (_REPO_ROOT, _BACKEND_DIR):
-        if _p and _p not in sys.path:
-            sys.path.insert(0, _p)
-
-    if not isinstance(url, str) or not url.strip():
-        raise ValueError("Missing url")
-
-    url = url.strip()
-
-    try:
-        from backend import main as core  # type: ignore
-    except Exception as e:
-        raise RuntimeError(f"Cannot import backend.main: {e}")
-
-    normalize_website = getattr(core, "normalize_website", None)
-    if not callable(normalize_website):
-        raise RuntimeError("normalize_website missing")
-
-    website_norm = normalize_website(url) or url
-
-    # 1) Load rendered HTML via Playwright (instead of httpx)
-    html: str = ""
-    final_url: str = website_norm
-    try:
-        from playwright.async_api import async_playwright  # type: ignore
-    except Exception as e:
-        raise RuntimeError(f"Playwright not installed: {e}")
-
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-            )
-            context = await browser.new_context(
-                locale="it-IT",
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1400, "height": 900},
-            )
-            page = await context.new_page()
-            page.set_default_timeout(20000)
-            await page.goto(website_norm, wait_until="domcontentloaded")
-            try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
-            except Exception:
-                pass
-            try:
-                await page.wait_for_timeout(1200)
-            except Exception:
-                pass
-            try:
-                final_url = page.url or website_norm
-            except Exception:
-                final_url = website_norm
-            try:
-                html = await page.content()
-            except Exception:
-                html = ""
-            try:
-                await context.close()
-            except Exception:
-                pass
-            try:
-                await browser.close()
-            except Exception:
-                pass
-    except Exception:
-        # Best-effort: keep html empty and proceed with technical audit + fallbacks.
-        html = html or ""
-        final_url = final_url or website_norm
-
-    email: Optional[str] = None
-    try:
-        extract_email_from_html = getattr(core, "extract_email_from_html", None)
-        if callable(extract_email_from_html):
-            email = extract_email_from_html(html or "")
-    except Exception:
-        email = None
-
-    try:
-        from backend.audit_engine import run_technical_audit  # type: ignore
-    except Exception as e:
-        raise RuntimeError(f"Cannot import backend.audit_engine.run_technical_audit: {e}")
-
-    # 2) Technical audit (SSL, SEO, speed, Google Ads, phone)
-    report: Dict[str, Any] = await asyncio.to_thread(run_technical_audit, final_url)
-
-    # 3) Deep email fallback (contact pages)
-    if not (email or "").strip():
-        try:
-            deep_fn = getattr(core, "deep_scrape_email_from_website", None)
-            if callable(deep_fn):
-                email = await deep_fn(final_url)
-        except Exception:
-            pass
-
-    # Fallback: raw HTML regex for email (some sites show it only in header/nav/footer)
-    if not (email or "").strip():
-        try:
-            email_match = re.search(
-                r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
-                html if isinstance(html, str) else "",
-            )
-            if email_match:
-                email = (email_match.group(0) or "").strip() or None
-        except Exception:
-            pass
-
-    # 4) Extract nome from HTML <title> and clean common suffixes
-    html_home = html if isinstance(html, str) else ""
-    nome = None
-    try:
-        m = re.search(r"<title[^>]*>(.*?)</title>", html_home, flags=re.IGNORECASE | re.DOTALL)
-        if m:
-            t = re.sub(r"\s+", " ", (m.group(1) or "")).strip()
-            if t:
-                # Strip common "Home" suffixes like "- Home", "| Home", etc.
-                t = re.sub(r"\s*(?:\-|\||—|–)\s*home\s*$", "", t, flags=re.IGNORECASE).strip()
-                t = re.sub(r"\s*(?:\-|\||—|–)\s*homepage\s*$", "", t, flags=re.IGNORECASE).strip()
-                t = re.sub(r"\s*(?:\-|\||—|–)\s*home page\s*$", "", t, flags=re.IGNORECASE).strip()
-                nome = t or None
-    except Exception:
-        nome = None
-
-    # Match worker heuristics: supplement raw HTML checks.
-    raw_lower = html_home.lower() if html_home else ""
-    has_pixel = (
-        "fbevents.js" in raw_lower
-        or "connect.facebook.net" in raw_lower
-        or "fbq('init'" in raw_lower
-        or "fbq(\"init\"" in raw_lower
-    )
-    has_gtm = (
-        "gtm.js" in raw_lower
-        or bool(re.search(r"\bGTM-[A-Z0-9]+\b", html_home or "", flags=re.IGNORECASE))
-    )
-    try:
-        has_ssl = str(final_url or "").lower().startswith("https://")
-    except Exception:
-        has_ssl = False
-    has_google_ads = bool(report.get("has_google_ads"))
-
-    tech_stack = "Custom HTML"
-    try:
-        detect_tech_stack = getattr(core, "detect_tech_stack", None)
-        if callable(detect_tech_stack):
-            tech_stack = str(detect_tech_stack(html_home or "") or "Custom HTML")
-    except Exception:
-        tech_stack = "Custom HTML"
-
-    telefono = None
-    try:
-        telefono = report.get("phone")
-    except Exception:
-        telefono = None
-
-    # Fallback: raw HTML regex for Italian phone formats with dots/spaces
-    if not (telefono or "").strip():
-        try:
-            phone_match = re.search(r'(\+39[\s.]?)?3\d{2}[\s.]?\d{6,7}|(\+39[\s.]?)?\d{2,3}[\s.]?\d{3,4}[\s.]?\d{3,4}', html)
-            if phone_match:
-                telefono = (phone_match.group(0) or "").strip() or None
-        except Exception:
-            pass
-
-    seo_errors: List[Dict[str, Any]] = []
-    try:
-        issues = report.get("issues")
-        if isinstance(issues, list):
-            for it in issues:
-                if not isinstance(it, dict):
-                    continue
-                code = str(it.get("code") or "").strip().upper()
-                if not code.startswith("SEO_"):
-                    continue
-                seo_errors.append(
-                    {
-                        "code": it.get("code"),
-                        "severity": it.get("severity"),
-                        "message": it.get("message"),
-                        "line": it.get("line"),
-                    }
-                )
-    except Exception:
-        seo_errors = []
-
-    load_speed_seconds = None
-    try:
-        if report.get("load_speed_seconds") is not None:
-            load_speed_seconds = float(report.get("load_speed_seconds"))
-    except Exception:
-        load_speed_seconds = None
-
-    return {
-        "nome": nome,
-        "sito": final_url or website_norm,
-        "telefono": telefono,
-        "email": email,
-        "indirizzo": None,
-        "citta": None,
-        "categoria": None,
-        "has_pixel": has_pixel,
-        "has_gtm": has_gtm,
-        "has_google_ads": has_google_ads,
-        "has_ssl": has_ssl,
-        "seo_errors": seo_errors,
-        "load_speed_seconds": load_speed_seconds,
-        "tech_stack": tech_stack,
+    import re
+    from backend.main import audit_from_html, fetch_homepage_html, deep_scrape_email_from_website
+    from backend.audit_engine import run_technical_audit
+    
+    result = {
+        "nome": None, "sito": url, "telefono": None, "email": None,
+        "indirizzo": None, "citta": None, "categoria": None,
+        "has_pixel": False, "has_gtm": False, "has_google_ads": False,
+        "has_ssl": url.startswith("https"),
+        "seo_errors": [], "load_speed_seconds": None, "tech_stack": None
     }
+    
+    try:
+        # Use Playwright exactly like the worker loop does
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            
+            pixel_found = False
+            gtm_found = False
+            requests_log = []
+            
+            page.on("request", lambda req: requests_log.append(req.url))
+            
+            await page.goto(url, timeout=15000, wait_until="networkidle")
+            html = await page.content()
+            await browser.close()
+            
+            # Check pixel in HTML and network requests
+            pixel_strings = ["fbevents.js", "connect.facebook.net", "fbq('init'", 'fbq("init"']
+            gtm_strings = ["googletagmanager.com/gtm.js", "GTM-"]
+            ads_strings = ["googleads.g.doubleclick.net", "google_conversion", "gtag('config', 'AW-"]
+            
+            for s in pixel_strings:
+                if s in html or any(s in r for r in requests_log):
+                    pixel_found = True
+                    break
+            
+            for s in gtm_strings:
+                if s in html or any(s in r for r in requests_log):
+                    gtm_found = True
+                    break
+                    
+            ads_found = any(
+                any(s in r for r in requests_log) or s in html
+                for s in ads_strings
+            )
+            
+            result["has_pixel"] = pixel_found
+            result["has_gtm"] = gtm_found
+            result["has_google_ads"] = ads_found
+            
+            # Extract email
+            email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html)
+            if email_match:
+                result["email"] = email_match.group(0)
+            else:
+                result["email"] = await asyncio.to_thread(deep_scrape_email_from_website, url)
+            
+            # Extract phone
+            phone_match = re.search(r'(\+39\s*)?3\d{2}[\.\s\-]\d{3}[\.\s\-]?\d{4}|(\+39\s*)?0\d{1,3}[\.\s\-]\d{4,8}|\+39\s*\d{2,3}[\.\s]\d{6,7}', html)
+            if phone_match:
+                result["telefono"] = phone_match.group(0).strip()
+            
+            # Extract nome from title
+            title_match = re.search(r'<title[^>]*>([^<]+)</title>', html, re.IGNORECASE)
+            if title_match:
+                nome = title_match.group(1).strip()
+                for suffix in [' - Home', ' | Home', ' – Home', ' - Benvenuto', ' | Benvenuto']:
+                    nome = nome.replace(suffix, '')
+                result["nome"] = nome.strip()
+            
+            # Tech stack
+            if 'wp-content' in html or 'wordpress' in html.lower():
+                result["tech_stack"] = "WordPress"
+            elif 'shopify' in html.lower():
+                result["tech_stack"] = "Shopify"
+            elif 'wix.com' in html:
+                result["tech_stack"] = "Wix"
+            elif 'squarespace' in html.lower():
+                result["tech_stack"] = "Squarespace"
+            
+            # SSL
+            result["has_ssl"] = url.startswith("https")
+            
+    except Exception as e:
+        print(f"[process_single_url] error: {e}")
+    
+    # Run technical audit for SEO and speed
+    try:
+        tech = await asyncio.to_thread(run_technical_audit, url)
+        result["seo_errors"] = tech.get("seo_issues", [])
+        result["load_speed_seconds"] = tech.get("load_speed_seconds")
+        if not result["has_google_ads"]:
+            result["has_google_ads"] = tech.get("has_google_ads", False)
+    except Exception as e:
+        print(f"[process_single_url] tech audit error: {e}")
+    
+    return result
 
 
 if app is not None:
