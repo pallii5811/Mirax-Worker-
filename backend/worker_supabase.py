@@ -127,7 +127,14 @@ def _extract_first_social_link(html: Optional[str], kind: str) -> Optional[str]:
 
 async def process_single_url(url: str) -> Dict[str, Any]:
     import re
-    from backend.main import audit_from_html, deep_scrape_email_from_website
+    from backend.main import (
+        audit_from_html,
+        deep_scrape_email_from_website,
+        deep_scrape_mobile_from_website,
+        detect_tech_stack,
+        extract_email_from_html,
+        normalize_phone_italy,
+    )
     from backend.audit_engine import run_technical_audit
     
     result = {
@@ -192,19 +199,47 @@ async def process_single_url(url: str) -> Dict[str, Any]:
             result["has_google_ads"] = ads_found
             
             # Extract email
-            email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html)
-            if email_match:
-                result["email"] = email_match.group(0)
-            else:
-                result["email"] = await asyncio.wait_for(
+            email = None
+            try:
+                email = extract_email_from_html(html)
+            except Exception:
+                email = None
+            if not email:
+                email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html)
+                if email_match:
+                    email = email_match.group(0)
+            if not email:
+                email = await asyncio.wait_for(
                     deep_scrape_email_from_website(url, html_home=html),
                     timeout=12,
                 )
+            result["email"] = email
             
             # Extract phone
-            phone_match = re.search(r'(\+39[\s.]?)?(0\d{1,3}[\s.\-\/]\d{3,8}|3\d{2}[\s.\-]\d{6,7}|\+39\s*3\d{9})', html)
-            if phone_match:
-                result["telefono"] = phone_match.group(0).strip()
+            telefono = None
+            try:
+                telefono = await asyncio.wait_for(
+                    deep_scrape_mobile_from_website(url, html),
+                    timeout=8.0,
+                )
+            except Exception:
+                telefono = None
+            if not telefono:
+                phone_match = re.search(
+                    r'(\+39[\s.]?)?(0\d{1,3}[\s.\-\/]\d{3,8}|3\d{2}[\s.\-]\d{6,7}|\+39\s*3\d{9})',
+                    html,
+                )
+                if phone_match:
+                    try:
+                        telefono = normalize_phone_italy(phone_match.group(0).strip())
+                    except Exception:
+                        telefono = phone_match.group(0).strip()
+            # Guardrail: drop too-short numbers (common false positives)
+            if telefono:
+                digits = re.sub(r"\D+", "", str(telefono))
+                if len(digits) < 8:
+                    telefono = None
+            result["telefono"] = telefono
             
             # Extract nome from title
             nome = None
@@ -220,14 +255,10 @@ async def process_single_url(url: str) -> Dict[str, Any]:
                 result["nome"] = nome.strip()
             
             # Tech stack
-            if 'wp-content' in html or 'wordpress' in html.lower():
-                result["tech_stack"] = "WordPress"
-            elif 'shopify' in html.lower():
-                result["tech_stack"] = "Shopify"
-            elif 'wix.com' in html:
-                result["tech_stack"] = "Wix"
-            elif 'squarespace' in html.lower():
-                result["tech_stack"] = "Squarespace"
+            try:
+                result["tech_stack"] = detect_tech_stack(html)
+            except Exception:
+                pass
             
             # SSL
             result["has_ssl"] = url.startswith("https")
