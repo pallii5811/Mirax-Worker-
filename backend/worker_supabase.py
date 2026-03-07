@@ -156,20 +156,22 @@ async def process_single_url(url: str) -> Dict[str, Any]:
             await browser.close()
             
             # Check pixel in HTML and network requests
-            pixel_strings = ["fbevents.js", "connect.facebook.net", "fbq('init'", 'fbq("init"']
-            gtm_strings = ["googletagmanager.com/gtm.js", "GTM-"]
+            raw_lower = html.lower()
+            pixel_found = (
+                "fbevents.js" in raw_lower
+                or "connect.facebook.net" in raw_lower
+                or "fbq('init'" in raw_lower
+                or 'fbq("init"' in raw_lower
+                or "facebook.com/tr?id=" in raw_lower
+                or any("fbevents.js" in r or "connect.facebook.net" in r or "facebook.com/tr" in r for r in requests_log)
+            )
+            gtm_found = (
+                "gtm.js" in raw_lower
+                or bool(re.search(r"\bGTM-[A-Z0-9]+\b", html))
+                or any("gtm.js" in r or "GTM-" in r for r in requests_log)
+            )
             ads_strings = ["googleads.g.doubleclick.net", "google_conversion", "gtag('config', 'AW-"]
-            
-            for s in pixel_strings:
-                if s in html or any(s in r for r in requests_log):
-                    pixel_found = True
-                    break
-            
-            for s in gtm_strings:
-                if s in html or any(s in r for r in requests_log):
-                    gtm_found = True
-                    break
-                    
+
             ads_found = any(
                 any(s in r for r in requests_log) or s in html
                 for s in ads_strings
@@ -187,7 +189,7 @@ async def process_single_url(url: str) -> Dict[str, Any]:
                 result["email"] = await asyncio.to_thread(deep_scrape_email_from_website, url)
             
             # Extract phone
-            phone_match = re.search(r'(\+39\s*)?3\d{2}[\.\s\-]\d{3}[\.\s\-]?\d{4}|(\+39\s*)?0\d{1,3}[\.\s\-]\d{4,8}|\+39\s*\d{2,3}[\.\s]\d{6,7}', html)
+            phone_match = re.search(r'(\+39[\s.]?)?(0\d{1,3}[\s.\-\/]\d{3,8}|3\d{2}[\s.\-]\d{6,7}|\+39\s*3\d{9})', html)
             if phone_match:
                 result["telefono"] = phone_match.group(0).strip()
             
