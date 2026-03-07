@@ -141,26 +141,78 @@ async def process_single_url(url: str) -> Dict[str, Any]:
     except Exception as e:
         raise RuntimeError(f"Cannot import backend.main: {e}")
 
-    audit_fn = getattr(core, "audit_website_with_status", None)
     normalize_website = getattr(core, "normalize_website", None)
-    if not callable(audit_fn) or not callable(normalize_website):
-        raise RuntimeError("audit_website_with_status/normalize_website missing")
+    if not callable(normalize_website):
+        raise RuntimeError("normalize_website missing")
 
     website_norm = normalize_website(url) or url
 
-    (
-        audit,
-        _tech_stack,
-        _load_speed_s,
-        _domain_creation_date,
-        _domain_expiration_date,
-        email,
-        _website_http_status,
-        _website_error,
-        html,
-        _website_error_line,
-        _website_error_hint,
-    ) = await audit_fn(website_norm)
+    # 1) Load rendered HTML via Playwright (instead of httpx)
+    html: str = ""
+    final_url: str = website_norm
+    try:
+        from playwright.async_api import async_playwright  # type: ignore
+    except Exception as e:
+        raise RuntimeError(f"Playwright not installed: {e}")
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+            context = await browser.new_context(
+                locale="it-IT",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1400, "height": 900},
+            )
+            page = await context.new_page()
+            page.set_default_timeout(20000)
+            await page.goto(website_norm, wait_until="domcontentloaded")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            try:
+                await page.wait_for_timeout(1200)
+            except Exception:
+                pass
+            try:
+                final_url = page.url or website_norm
+            except Exception:
+                final_url = website_norm
+            try:
+                html = await page.content()
+            except Exception:
+                html = ""
+            try:
+                await context.close()
+            except Exception:
+                pass
+            try:
+                await browser.close()
+            except Exception:
+                pass
+    except Exception:
+        # Best-effort: keep html empty and proceed with technical audit + fallbacks.
+        html = html or ""
+        final_url = final_url or website_norm
+
+    email: Optional[str] = None
+    try:
+        extract_email_from_html = getattr(core, "extract_email_from_html", None)
+        if callable(extract_email_from_html):
+            email = extract_email_from_html(html or "")
+    except Exception:
+        email = None
 
     try:
         from backend.audit_engine import run_technical_audit  # type: ignore
@@ -168,14 +220,14 @@ async def process_single_url(url: str) -> Dict[str, Any]:
         raise RuntimeError(f"Cannot import backend.audit_engine.run_technical_audit: {e}")
 
     # 2) Technical audit (SSL, SEO, speed, Google Ads, phone)
-    report: Dict[str, Any] = await asyncio.to_thread(run_technical_audit, website_norm)
+    report: Dict[str, Any] = await asyncio.to_thread(run_technical_audit, final_url)
 
     # 3) Deep email fallback (contact pages)
     if not (email or "").strip():
         try:
             deep_fn = getattr(core, "deep_scrape_email_from_website", None)
             if callable(deep_fn):
-                email = await deep_fn(website_norm)
+                email = await deep_fn(final_url)
         except Exception:
             pass
 
@@ -207,20 +259,31 @@ async def process_single_url(url: str) -> Dict[str, Any]:
     except Exception:
         nome = None
 
-    # Match worker heuristics: supplement audit flags with raw HTML checks.
+    # Match worker heuristics: supplement raw HTML checks.
     raw_lower = html_home.lower() if html_home else ""
-    has_pixel = bool(getattr(audit, "has_facebook_pixel", False)) or (
+    has_pixel = (
         "fbevents.js" in raw_lower
         or "connect.facebook.net" in raw_lower
         or "fbq('init'" in raw_lower
         or "fbq(\"init\"" in raw_lower
     )
-    has_gtm = bool(getattr(audit, "has_gtm", False)) or (
+    has_gtm = (
         "gtm.js" in raw_lower
         or bool(re.search(r"\bGTM-[A-Z0-9]+\b", html_home or "", flags=re.IGNORECASE))
     )
-    has_ssl = bool(getattr(audit, "has_ssl", False))
+    try:
+        has_ssl = str(final_url or "").lower().startswith("https://")
+    except Exception:
+        has_ssl = False
     has_google_ads = bool(report.get("has_google_ads"))
+
+    tech_stack = "Custom HTML"
+    try:
+        detect_tech_stack = getattr(core, "detect_tech_stack", None)
+        if callable(detect_tech_stack):
+            tech_stack = str(detect_tech_stack(html_home or "") or "Custom HTML")
+    except Exception:
+        tech_stack = "Custom HTML"
 
     telefono = None
     try:
@@ -267,7 +330,7 @@ async def process_single_url(url: str) -> Dict[str, Any]:
 
     return {
         "nome": nome,
-        "sito": website_norm,
+        "sito": final_url or website_norm,
         "telefono": telefono,
         "email": email,
         "indirizzo": None,
@@ -279,7 +342,7 @@ async def process_single_url(url: str) -> Dict[str, Any]:
         "has_ssl": has_ssl,
         "seo_errors": seo_errors,
         "load_speed_seconds": load_speed_seconds,
-        "tech_stack": _tech_stack,
+        "tech_stack": tech_stack,
     }
 
 
