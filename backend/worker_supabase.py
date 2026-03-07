@@ -244,6 +244,23 @@ async def process_single_url(url: str) -> Dict[str, Any]:
             result["has_google_ads"] = tech.get("has_google_ads", False)
     except Exception as e:
         print(f"[process_single_url] tech audit error: {e}")
+
+    # Compatibility payload for frontend/business result shape
+    try:
+        result["meta_pixel"] = bool(result.get("has_pixel"))
+        result["google_tag_manager"] = bool(result.get("has_gtm"))
+        result["pixel_missing"] = not bool(result.get("has_pixel"))
+        result["tiktok_missing"] = True
+        result["audit"] = {
+            "has_ssl": bool(result.get("has_ssl")),
+            "is_mobile_responsive": False,
+            "has_facebook_pixel": bool(result.get("has_pixel")),
+            "has_tiktok_pixel": False,
+            "has_gtm": bool(result.get("has_gtm")),
+            "missing_instagram": False,
+        }
+    except Exception:
+        pass
     
     return result
 
