@@ -179,6 +179,18 @@ async def process_single_url(url: str) -> Dict[str, Any]:
         except Exception:
             pass
 
+    # Fallback: raw HTML regex for email (some sites show it only in header/nav/footer)
+    if not (email or "").strip():
+        try:
+            email_match = re.search(
+                r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+                html if isinstance(html, str) else "",
+            )
+            if email_match:
+                email = (email_match.group(0) or "").strip() or None
+        except Exception:
+            pass
+
     # 4) Extract nome from HTML <title> and clean common suffixes
     html_home = html if isinstance(html, str) else ""
     nome = None
@@ -205,6 +217,18 @@ async def process_single_url(url: str) -> Dict[str, Any]:
         telefono = report.get("phone")
     except Exception:
         telefono = None
+
+    # Fallback: raw HTML regex for Italian phone formats with dots/spaces
+    if not (telefono or "").strip():
+        try:
+            phone_match = re.search(
+                r"(\+39[\s.]?)?[\d]{3}[\s.][\d]{3,4}[\s.][\d]{3,4}",
+                html if isinstance(html, str) else "",
+            )
+            if phone_match:
+                telefono = (phone_match.group(0) or "").strip() or None
+        except Exception:
+            pass
 
     seo_errors: List[Dict[str, Any]] = []
     try:
