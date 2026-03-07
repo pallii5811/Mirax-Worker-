@@ -201,7 +201,7 @@ _MOBILE_IT_RE = re.compile(r"\b(3[2-9]\d{1}\s?\d{3}\s?\d{3,4})\b")
 
 # Strict mobile regex requested for robust extraction from raw HTML (including cookie-consent blocks)
 _MOBILE_IT_STRICT_RE = re.compile(
-    r"(?<!\d)(?:(?:\+|00)39)?\s*3\d{2}\s*\d{6,7}(?!\d)",
+    r"(?<!\d)(?:(?:\+|00)39)?[\s\.\-]*3\d{2}[\s\.\-]*\d{6,7}(?!\d)",
     flags=re.IGNORECASE,
 )
 
@@ -212,7 +212,7 @@ def _extract_mobile_it_from_text(text: Optional[str]) -> Optional[str]:
     m = _MOBILE_IT_RE.search(text)
     if not m:
         return None
-    candidate = m.group(1)
+    candidate = m.group(1) or ""
     num, is_mobile = clean_phone(candidate)
     if not num or not is_mobile:
         return None
@@ -283,7 +283,7 @@ def _extract_mobile_it_strict_from_raw_html(html: Optional[str]) -> Optional[str
             return None
         raw = m.group(0) or ""
         # Clean spaces/dashes and remove any +/00 prefix, then validate length.
-        raw = re.sub(r"[\s\-]", "", raw)
+        raw = re.sub(r"[\s\-\.]", "", raw)
         raw = raw.replace("+", "")
         if raw.startswith("00"):
             raw = raw[2:]
