@@ -421,6 +421,140 @@ async def _scrape_single_place_fallback(category: str, location: str, zone: Opti
             }
         ]
 
+
+async def _scrape_reviews_and_competitors(
+    business_name: str,
+    category: str,
+    location: str,
+) -> Dict[str, Any]:
+    """Scrapa recensioni e competitor da Google Maps. Non-blocking: 
+    in caso di errore ritorna dict vuoto senza crashare il worker."""
+    result = {"google_reviews": [], "local_competitors": []}
+    try:
+        import random
+        import re
+        from playwright.async_api import async_playwright
+        from urllib.parse import quote
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=False,
+                args=["--lang=it-IT", "--disable-blink-features=AutomationControlled"]
+            )
+            context = await browser.new_context(
+                locale="it-IT",
+                timezone_id="Europe/Rome",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1400, "height": 900},
+            )
+
+            # --- RECENSIONI ---
+            try:
+                page = await context.new_page()
+                query = quote(f"{business_name} {location}")
+                url = f"https://www.google.com/maps/search/{query}?hl=it&gl=it"
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(random.uniform(1500, 2500))
+
+                # Clicca sul primo risultato se siamo in lista
+                first_result = page.locator('div.Nv2PK').first
+                if await first_result.count() > 0:
+                    await first_result.click()
+                    await page.wait_for_timeout(random.uniform(1500, 2000))
+
+                # Clicca sul tab Recensioni
+                reviews_tab = page.locator('button[aria-label*="ecensioni"], button[data-tab-index="1"]').first
+                if await reviews_tab.count() > 0:
+                    await reviews_tab.click()
+                    await page.wait_for_timeout(random.uniform(1000, 1500))
+
+                # Scrapa le recensioni visibili (max 5)
+                review_blocks = page.locator('div[data-review-id]')
+                count = min(await review_blocks.count(), 5)
+                reviews = []
+                for idx in range(count):
+                    try:
+                        block = review_blocks.nth(idx)
+                        # Espandi testo se presente
+                        more_btn = block.locator('button.w8nwRe')
+                        if await more_btn.count() > 0:
+                            await more_btn.click()
+                            await page.wait_for_timeout(300)
+                        text = await block.locator('span.wiI7pd').first.text_content(timeout=2000)
+                        stars_attr = await block.locator('span[aria-label*="stell"]').first.get_attribute('aria-label', timeout=2000)
+                        stars = 5
+                        if stars_attr:
+                            m = re.search(r'(\d)', stars_attr)
+                            if m:
+                                stars = int(m.group(1))
+                        if text and text.strip():
+                            reviews.append({"text": text.strip()[:500], "stars": stars})
+                    except Exception:
+                        continue
+                result["google_reviews"] = reviews
+                await page.close()
+            except Exception as e:
+                print(f"[reviews_scraper] Errore recensioni: {e}")
+
+            # --- COMPETITOR ---
+            try:
+                page2 = await context.new_page()
+                comp_query = quote(f"{category} {location}")
+                comp_url = f"https://www.google.com/maps/search/{comp_query}?hl=it&gl=it"
+                await page2.goto(comp_url, wait_until="domcontentloaded", timeout=30000)
+                await page2.wait_for_timeout(random.uniform(1500, 2500))
+
+                competitor_cards = page2.locator('div.Nv2PK')
+                total = min(await competitor_cards.count(), 6)
+                competitors = []
+                for idx in range(total):
+                    try:
+                        card = competitor_cards.nth(idx)
+                        name = await card.locator('div.qBF1Pd').first.text_content(timeout=1500)
+                        if not name or name.strip().lower() == business_name.strip().lower():
+                            continue
+                        rating_el = card.locator('span.MW4etd')
+                        rating = None
+                        if await rating_el.count() > 0:
+                            rt = await rating_el.first.text_content(timeout=1000)
+                            try:
+                                rating = float(rt.replace(',', '.'))
+                            except Exception:
+                                pass
+                        reviews_el = card.locator('span.UY7F9')
+                        reviews_count = None
+                        if await reviews_el.count() > 0:
+                            rc = await reviews_el.first.text_content(timeout=1000)
+                            try:
+                                reviews_count = int(re.sub(r'\D', '', rc))
+                            except Exception:
+                                pass
+                        competitors.append({
+                            "name": name.strip(),
+                            "rating": rating,
+                            "reviews_count": reviews_count,
+                        })
+                        if len(competitors) >= 5:
+                            break
+                    except Exception:
+                        continue
+                result["local_competitors"] = competitors
+                await page2.close()
+            except Exception as e:
+                print(f"[reviews_scraper] Errore competitor: {e}")
+
+            await context.close()
+            await browser.close()
+
+    except Exception as e:
+        print(f"[reviews_scraper] Errore generale: {e}")
+
+    return result
+
 try:
     from dotenv import load_dotenv  # type: ignore
 except Exception:  # pragma: no cover
@@ -1104,8 +1238,29 @@ async def _run_core_scraper(category: str, location: str, zone: Optional[str] = 
                 "rating": rating,
                 "reviews_count": reviews_count,
                 "is_claimed": is_claimed,
+                "google_reviews": [],
+                "local_competitors": [],
             }
         )
+
+    # Arricchisci ogni lead con recensioni e competitor
+    # Lo facciamo DOPO il loop principale per non interferire con lo scraping
+    for lead in results:
+        try:
+            enrichment = await asyncio.wait_for(
+                _scrape_reviews_and_competitors(
+                    business_name=lead.get("business_name", ""),
+                    category=category,
+                    location=location,
+                ),
+                timeout=45.0
+            )
+            lead["google_reviews"] = enrichment.get("google_reviews", [])
+            lead["local_competitors"] = enrichment.get("local_competitors", [])
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+        except Exception as e:
+            print(f"[enrichment] Errore per {lead.get('business_name','?')}: {e}")
+            # Non crashare — i campi restano liste vuote
 
     return results
 
