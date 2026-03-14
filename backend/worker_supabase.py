@@ -438,8 +438,13 @@ async def _scrape_reviews_and_competitors(
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
-                headless=False,
-                args=["--lang=it-IT", "--disable-blink-features=AutomationControlled"]
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled"
+                ]
             )
             context = await browser.new_context(
                 locale="it-IT",
