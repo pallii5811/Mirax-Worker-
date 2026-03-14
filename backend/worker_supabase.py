@@ -1816,5 +1816,261 @@ def run_reaudit_worker(max_leads: int = 20) -> None:
         pass
 
 
+from playwright.async_api import async_playwright
+
+
+@app.post("/scrape-reviews")
+async def scrape_reviews(data: dict):
+    business_name = data.get("business_name", "")
+    city = data.get("city", "")
+    if not business_name:
+        return {"reviews": [], "rating": 0, "total": 0}
+    browser = None
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        query = f"{business_name} {city}"
+        url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
+        await page.goto(url, timeout=30000)
+        await page.wait_for_timeout(3000)
+        try:
+            await page.click('a[href*="/maps/place/"]', timeout=5000)
+            await page.wait_for_timeout(2000)
+        except:
+            pass
+        rating = 0
+        total = 0
+        try:
+            rating_el = await page.query_selector('div.fontDisplayLarge')
+            if rating_el:
+                rating = float(await rating_el.inner_text())
+            total_el = await page.query_selector(
+                'button[jsaction*="review"] span'
+            )
+            if total_el:
+                total_text = await total_el.inner_text()
+                total = int(''.join(filter(str.isdigit, total_text)))
+        except:
+            pass
+        reviews = []
+        try:
+            await page.click(
+                'button[jsaction*="review"]', timeout=5000
+            )
+            await page.wait_for_timeout(2000)
+            review_elements = await page.query_selector_all(
+                'div[data-review-id]'
+            )
+            for el in review_elements[:10]:
+                try:
+                    text_el = await el.query_selector('span[jsan*="t"]')
+                    stars_el = await el.query_selector(
+                        'span[aria-label*="stelle"]'
+                    )
+                    text = await text_el.inner_text() if text_el else ""
+                    stars_label = await stars_el.get_attribute(
+                        'aria-label'
+                    ) if stars_el else "0"
+                    stars = int(
+                        stars_label.split()[0]
+                    ) if stars_label else 0
+                    if text:
+                        reviews.append({"text": text, "stars": stars})
+                except:
+                    continue
+        except:
+            pass
+        return {"reviews": reviews, "rating": rating, "total": total}
+    except Exception as e:
+        return {"reviews": [], "rating": 0, "total": 0, "error": str(e)}
+    finally:
+        if browser:
+            await browser.close()
+
+
+@app.post("/scrape-competitors")
+async def scrape_competitors(data: dict):
+    category = data.get("category", "")
+    city = data.get("city", "")
+    if not category or not city:
+        return {"competitors": []}
+    browser = None
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        query = f"{category} {city}"
+        url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
+        await page.goto(url, timeout=30000)
+        await page.wait_for_timeout(3000)
+        competitors = []
+        results = await page.query_selector_all('div[role="article"]')
+        for result in results[:8]:
+            try:
+                name_el = await result.query_selector(
+                    'div.fontHeadlineSmall'
+                )
+                rating_el = await result.query_selector('span.MW4etd')
+                reviews_el = await result.query_selector('span.UY7F9')
+                name = await name_el.inner_text() if name_el else ""
+                rating = float(
+                    await rating_el.inner_text()
+                ) if rating_el else 0
+                reviews_text = await reviews_el.inner_text() \
+                    if reviews_el else "0"
+                reviews_count = int(
+                    ''.join(filter(str.isdigit, reviews_text))
+                ) if reviews_text else 0
+                if name:
+                    competitors.append({
+                        "name": name,
+                        "rating": rating,
+                        "reviews_count": reviews_count
+                    })
+            except:
+                continue
+        return {"competitors": competitors}
+    except Exception as e:
+        return {"competitors": [], "error": str(e)}
+    finally:
+        if browser:
+            await browser.close()
+
+
+@app.post("/scrape-social")
+async def scrape_social(data: dict):
+    instagram_url = data.get("instagram_url", "")
+    facebook_url = data.get("facebook_url", "")
+    result = {}
+    browser = None
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(headless=True)
+        if instagram_url:
+            page = await browser.new_page()
+            try:
+                await page.goto(instagram_url, timeout=20000)
+                await page.wait_for_timeout(2000)
+                followers = None
+                posts = None
+                meta = await page.query_selector(
+                    'meta[name="description"]'
+                )
+                if meta:
+                    import re
+                    content = await meta.get_attribute('content')
+                    f = re.search(
+                        r'([\d.,K]+)\s*Follower', content, re.I
+                    )
+                    if f:
+                        followers = f.group(1)
+                    p = re.search(r'(\d+)\s*Post', content, re.I)
+                    if p:
+                        posts = int(p.group(1))
+                result["instagram"] = {
+                    "found": True,
+                    "url": instagram_url,
+                    "followers": followers or "N/D",
+                    "posts": posts or 0
+                }
+            except:
+                result["instagram"] = {
+                    "found": False,
+                    "url": instagram_url
+                }
+            finally:
+                await page.close()
+        if facebook_url:
+            page = await browser.new_page()
+            try:
+                await page.goto(facebook_url, timeout=20000)
+                await page.wait_for_timeout(2000)
+                likes = None
+                meta = await page.query_selector(
+                    'meta[name="description"]'
+                )
+                if meta:
+                    import re
+                    content = await meta.get_attribute('content')
+                    f = re.search(r'([\d.,K]+)\s*like', content, re.I)
+                    if f:
+                        likes = f.group(1)
+                result["facebook"] = {
+                    "found": True,
+                    "url": facebook_url,
+                    "likes": likes or "N/D"
+                }
+            except:
+                result["facebook"] = {
+                    "found": False,
+                    "url": facebook_url
+                }
+            finally:
+                await page.close()
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        if browser:
+            await browser.close()
+
+
+@app.post("/scrape-registry")
+async def scrape_registry(data: dict):
+    business_name = data.get("business_name", "")
+    city = data.get("city", "")
+    if not business_name:
+        return {"found": False}
+    browser = None
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(headless=True)
+        page = await browser.new_page()
+        url = "https://www.imprese.italia.it/"
+        await page.goto(url, timeout=20000)
+        await page.wait_for_timeout(1000)
+        try:
+            search_input = await page.query_selector('input[type="text"]')
+            if search_input:
+                await search_input.fill(business_name)
+                await page.keyboard.press('Enter')
+                await page.wait_for_timeout(2000)
+        except:
+            return {"found": False}
+        try:
+            first = await page.query_selector(
+                'a.company-link, .result-item a'
+            )
+            if first:
+                await first.click()
+                await page.wait_for_timeout(2000)
+            else:
+                return {"found": False}
+        except:
+            return {"found": False}
+        res = {"found": True}
+        fields = {
+            "ragione_sociale": ".company-name, h1",
+            "forma_giuridica": "[class*='forma']",
+            "codice_ateco": "[class*='ateco']",
+            "data_costituzione": "[class*='costituz']",
+            "sede_legale": "[class*='sede']",
+            "stato": "[class*='stato']"
+        }
+        for key, selector in fields.items():
+            try:
+                el = await page.query_selector(selector)
+                res[key] = await el.inner_text() if el else "N/D"
+            except:
+                res[key] = "N/D"
+        return res
+    except Exception as e:
+        return {"found": False, "error": str(e)}
+    finally:
+        if browser:
+            await browser.close()
+
+
 if __name__ == "__main__":
     main()
