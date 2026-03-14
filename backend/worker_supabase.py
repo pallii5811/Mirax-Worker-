@@ -465,6 +465,23 @@ async def _scrape_reviews_and_competitors(
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 await page.wait_for_timeout(random.uniform(1500, 2500))
 
+                # Accetta cookie Google
+                try:
+                    await page.click(
+                        'button:has-text("Accetta tutto")',
+                        timeout=5000
+                    )
+                    await page.wait_for_timeout(2000)
+                except:
+                    try:
+                        await page.click(
+                            'button:has-text("Accept all")',
+                            timeout=3000
+                        )
+                        await page.wait_for_timeout(2000)
+                    except:
+                        pass
+
                 # Clicca sul primo risultato se siamo in lista
                 first_result = page.locator('div.Nv2PK').first
                 if await first_result.count() > 0:
@@ -512,6 +529,23 @@ async def _scrape_reviews_and_competitors(
                 comp_url = f"https://www.google.com/maps/search/{comp_query}?hl=it&gl=it"
                 await page2.goto(comp_url, wait_until="domcontentloaded", timeout=30000)
                 await page2.wait_for_timeout(random.uniform(1500, 2500))
+
+                # Accetta cookie Google
+                try:
+                    await page2.click(
+                        'button:has-text("Accetta tutto")',
+                        timeout=5000
+                    )
+                    await page2.wait_for_timeout(2000)
+                except:
+                    try:
+                        await page2.click(
+                            'button:has-text("Accept all")',
+                            timeout=3000
+                        )
+                        await page2.wait_for_timeout(2000)
+                    except:
+                        pass
 
                 competitor_cards = page2.locator('div.Nv2PK')
                 total = min(await competitor_cards.count(), 6)
