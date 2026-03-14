@@ -1825,68 +1825,25 @@ async def scrape_reviews(data: dict):
     city = data.get("city", "")
     if not business_name:
         return {"reviews": [], "rating": 0, "total": 0}
-    browser = None
+
+    # Usa la funzione già esistente e funzionante
     try:
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=True)
-        page = await browser.new_page()
-        query = f"{business_name} {city}"
-        url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
-        await page.goto(url, timeout=30000)
-        await page.wait_for_timeout(3000)
-        try:
-            await page.click('a[href*="/maps/place/"]', timeout=5000)
-            await page.wait_for_timeout(2000)
-        except:
-            pass
-        rating = 0
-        total = 0
-        try:
-            rating_el = await page.query_selector('div.fontDisplayLarge')
-            if rating_el:
-                rating = float(await rating_el.inner_text())
-            total_el = await page.query_selector(
-                'button[jsaction*="review"] span'
-            )
-            if total_el:
-                total_text = await total_el.inner_text()
-                total = int(''.join(filter(str.isdigit, total_text)))
-        except:
-            pass
-        reviews = []
-        try:
-            await page.click(
-                'button[jsaction*="review"]', timeout=5000
-            )
-            await page.wait_for_timeout(2000)
-            review_elements = await page.query_selector_all(
-                'div[data-review-id]'
-            )
-            for el in review_elements[:10]:
-                try:
-                    text_el = await el.query_selector('span[jsan*="t"]')
-                    stars_el = await el.query_selector(
-                        'span[aria-label*="stelle"]'
-                    )
-                    text = await text_el.inner_text() if text_el else ""
-                    stars_label = await stars_el.get_attribute(
-                        'aria-label'
-                    ) if stars_el else "0"
-                    stars = int(
-                        stars_label.split()[0]
-                    ) if stars_label else 0
-                    if text:
-                        reviews.append({"text": text, "stars": stars})
-                except:
-                    continue
-        except:
-            pass
-        return {"reviews": reviews, "rating": rating, "total": total}
+        result = await asyncio.wait_for(
+            _scrape_reviews_and_competitors(
+                business_name=business_name,
+                category="",
+                location=city,
+            ),
+            timeout=45.0
+        )
+        reviews = result.get("google_reviews", [])
+        return {
+            "reviews": reviews,
+            "rating": 0,
+            "total": len(reviews)
+        }
     except Exception as e:
         return {"reviews": [], "rating": 0, "total": 0, "error": str(e)}
-    finally:
-        if browser:
-            await browser.close()
 
 
 @app.post("/scrape-competitors")
@@ -1895,47 +1852,20 @@ async def scrape_competitors(data: dict):
     city = data.get("city", "")
     if not category or not city:
         return {"competitors": []}
-    browser = None
+
+    # Usa la funzione già esistente e funzionante
     try:
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=True)
-        page = await browser.new_page()
-        query = f"{category} {city}"
-        url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
-        await page.goto(url, timeout=30000)
-        await page.wait_for_timeout(3000)
-        competitors = []
-        results = await page.query_selector_all('div[role="article"]')
-        for result in results[:8]:
-            try:
-                name_el = await result.query_selector(
-                    'div.fontHeadlineSmall'
-                )
-                rating_el = await result.query_selector('span.MW4etd')
-                reviews_el = await result.query_selector('span.UY7F9')
-                name = await name_el.inner_text() if name_el else ""
-                rating = float(
-                    await rating_el.inner_text()
-                ) if rating_el else 0
-                reviews_text = await reviews_el.inner_text() \
-                    if reviews_el else "0"
-                reviews_count = int(
-                    ''.join(filter(str.isdigit, reviews_text))
-                ) if reviews_text else 0
-                if name:
-                    competitors.append({
-                        "name": name,
-                        "rating": rating,
-                        "reviews_count": reviews_count
-                    })
-            except:
-                continue
-        return {"competitors": competitors}
+        result = await asyncio.wait_for(
+            _scrape_reviews_and_competitors(
+                business_name="",
+                category=category,
+                location=city,
+            ),
+            timeout=45.0
+        )
+        return {"competitors": result.get("local_competitors", [])}
     except Exception as e:
         return {"competitors": [], "error": str(e)}
-    finally:
-        if browser:
-            await browser.close()
 
 
 @app.post("/scrape-social")
@@ -1943,77 +1873,146 @@ async def scrape_social(data: dict):
     instagram_url = data.get("instagram_url", "")
     facebook_url = data.get("facebook_url", "")
     result = {}
-    browser = None
-    try:
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=True)
-        if instagram_url:
-            page = await browser.new_page()
-            try:
-                await page.goto(instagram_url, timeout=20000)
-                await page.wait_for_timeout(2000)
-                followers = None
-                posts = None
-                meta = await page.query_selector(
-                    'meta[name="description"]'
-                )
-                if meta:
-                    import re
-                    content = await meta.get_attribute('content')
-                    f = re.search(
-                        r'([\d.,K]+)\s*Follower', content, re.I
-                    )
-                    if f:
-                        followers = f.group(1)
-                    p = re.search(r'(\d+)\s*Post', content, re.I)
-                    if p:
-                        posts = int(p.group(1))
-                result["instagram"] = {
-                    "found": True,
-                    "url": instagram_url,
-                    "followers": followers or "N/D",
-                    "posts": posts or 0
-                }
-            except:
-                result["instagram"] = {
-                    "found": False,
-                    "url": instagram_url
-                }
-            finally:
-                await page.close()
-        if facebook_url:
-            page = await browser.new_page()
-            try:
-                await page.goto(facebook_url, timeout=20000)
-                await page.wait_for_timeout(2000)
-                likes = None
-                meta = await page.query_selector(
-                    'meta[name="description"]'
-                )
-                if meta:
-                    import re
-                    content = await meta.get_attribute('content')
-                    f = re.search(r'([\d.,K]+)\s*like', content, re.I)
-                    if f:
-                        likes = f.group(1)
-                result["facebook"] = {
-                    "found": True,
-                    "url": facebook_url,
-                    "likes": likes or "N/D"
-                }
-            except:
-                result["facebook"] = {
-                    "found": False,
-                    "url": facebook_url
-                }
-            finally:
-                await page.close()
+
+    if not instagram_url and not facebook_url:
         return result
+
+    try:
+        async with async_playwright() as p:
+            # User agent iPhone — unico modo per leggere Instagram
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-blink-features=AutomationControlled"
+                ]
+            )
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+                    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                    "Version/16.6 Mobile/15E148 Safari/604.1"
+                ),
+                locale="it-IT",
+                viewport={"width": 390, "height": 844}
+            )
+
+            # INSTAGRAM
+            if instagram_url:
+                page = await context.new_page()
+                try:
+                    await page.goto(
+                        instagram_url,
+                        timeout=25000,
+                        wait_until="domcontentloaded"
+                    )
+                    await page.wait_for_timeout(3000)
+
+                    followers = "N/D"
+                    posts = 0
+
+                    # Metodo 1: meta description (più affidabile)
+                    meta = await page.query_selector('meta[name="description"]')
+                    if meta:
+                        content = await meta.get_attribute('content') or ""
+                        # Formato IT: "1.520 follower, 320 seguiti, 45 post"
+                        # Formato EN: "1,520 Followers, 320 Following, 45 Posts"
+                        f_match = re.search(
+                            r'([\d.,KkMm]+)\s*(?:follower|Follower)',
+                            content, re.I
+                        )
+                        if f_match:
+                            followers = f_match.group(1)
+                        p_match = re.search(
+                            r'(\d+)\s*(?:post|Post)',
+                            content, re.I
+                        )
+                        if p_match:
+                            posts = int(p_match.group(1))
+
+                    # Metodo 2: titolo pagina
+                    if followers == "N/D":
+                        title = await page.title()
+                        if title:
+                            f_match = re.search(
+                                r'([\d.,KkMm]+)\s*(?:follower|Follower)',
+                                title, re.I
+                            )
+                            if f_match:
+                                followers = f_match.group(1)
+
+                    result["instagram"] = {
+                        "found": True,
+                        "url": instagram_url,
+                        "followers": followers,
+                        "posts": posts
+                    }
+                except Exception as e:
+                    result["instagram"] = {
+                        "found": False,
+                        "url": instagram_url,
+                        "error": str(e)
+                    }
+                finally:
+                    await page.close()
+
+            # FACEBOOK
+            if facebook_url:
+                page = await context.new_page()
+                try:
+                    await page.goto(
+                        facebook_url,
+                        timeout=25000,
+                        wait_until="domcontentloaded"
+                    )
+                    await page.wait_for_timeout(3000)
+
+                    likes = "N/D"
+                    followers_fb = "N/D"
+
+                    # Metodo 1: meta description
+                    meta = await page.query_selector('meta[name="description"]')
+                    if meta:
+                        content = await meta.get_attribute('content') or ""
+                        f_match = re.search(
+                            r'([\d.,KkMm]+)\s*(?:Mi piace|like|follower)',
+                            content, re.I
+                        )
+                        if f_match:
+                            likes = f_match.group(1)
+
+                    # Metodo 2: testo pagina
+                    if likes == "N/D":
+                        body = await page.inner_text('body')
+                        f_match = re.search(
+                            r'([\d.,]+)\s*(?:Mi piace|persone seguono)',
+                            body, re.I
+                        )
+                        if f_match:
+                            likes = f_match.group(1)
+
+                    result["facebook"] = {
+                        "found": True,
+                        "url": facebook_url,
+                        "likes": likes,
+                        "followers": followers_fb
+                    }
+                except Exception as e:
+                    result["facebook"] = {
+                        "found": False,
+                        "url": facebook_url,
+                        "error": str(e)
+                    }
+                finally:
+                    await page.close()
+
+            await context.close()
+            await browser.close()
     except Exception as e:
         return {"error": str(e)}
-    finally:
-        if browser:
-            await browser.close()
+
+    return result
 
 
 @app.post("/scrape-registry")
@@ -2022,54 +2021,119 @@ async def scrape_registry(data: dict):
     city = data.get("city", "")
     if not business_name:
         return {"found": False}
-    browser = None
+
     try:
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=True)
-        page = await browser.new_page()
-        url = "https://www.imprese.italia.it/"
-        await page.goto(url, timeout=20000)
-        await page.wait_for_timeout(1000)
-        try:
-            search_input = await page.query_selector('input[type="text"]')
-            if search_input:
-                await search_input.fill(business_name)
-                await page.keyboard.press('Enter')
-                await page.wait_for_timeout(2000)
-        except:
-            return {"found": False}
-        try:
-            first = await page.query_selector(
-                'a.company-link, .result-item a'
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox"]
             )
-            if first:
-                await first.click()
-                await page.wait_for_timeout(2000)
-            else:
-                return {"found": False}
-        except:
-            return {"found": False}
-        res = {"found": True}
-        fields = {
-            "ragione_sociale": ".company-name, h1",
-            "forma_giuridica": "[class*='forma']",
-            "codice_ateco": "[class*='ateco']",
-            "data_costituzione": "[class*='costituz']",
-            "sede_legale": "[class*='sede']",
-            "stato": "[class*='stato']"
-        }
-        for key, selector in fields.items():
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                locale="it-IT"
+            )
+            page = await context.new_page()
+
+            # Cerca su imprese.italia.it
+            search_url = (
+                "https://imprese.italia.it/ricerca-aziende?q="
+                + quote(f"{business_name} {city}".strip())
+            )
+            await page.goto(search_url, timeout=20000,
+                          wait_until="domcontentloaded")
+            await page.wait_for_timeout(2000)
+
+            # Accetta cookie se presente
             try:
-                el = await page.query_selector(selector)
-                res[key] = await el.inner_text() if el else "N/D"
+                await page.click(
+                    'button:has-text("Accetta"), '
+                    'button:has-text("Accetto"), '
+                    'button:has-text("OK")',
+                    timeout=2000
+                )
+                await page.wait_for_timeout(500)
             except:
-                res[key] = "N/D"
-        return res
+                pass
+
+            # Clicca primo risultato
+            clicked = False
+            for sel in [
+                'a.company-name',
+                'h3 a',
+                '.result a',
+                'table tbody tr:first-child a',
+                'ul li:first-child a'
+            ]:
+                try:
+                    el = await page.query_selector(sel)
+                    if el:
+                        await el.click()
+                        await page.wait_for_timeout(2000)
+                        clicked = True
+                        break
+                except:
+                    continue
+
+            if not clicked:
+                await browser.close()
+                return {"found": False}
+
+            # Leggi testo completo e parsa i campi
+            body_text = await page.inner_text('body')
+
+            res = {"found": True}
+
+            patterns = {
+                "ragione_sociale": [
+                    r'(?:Denominazione|Ragione sociale)[:\s]+([^\n]+)',
+                    r'(?:Nome impresa)[:\s]+([^\n]+)'
+                ],
+                "forma_giuridica": [
+                    r'(?:Forma giuridica|Natura giuridica)[:\s]+([^\n]+)'
+                ],
+                "codice_ateco": [
+                    r'(?:Codice ATECO|ATECO)[:\s]+([^\n]+)',
+                    r'(?:Attività principale)[:\s]+([^\n]+)'
+                ],
+                "data_costituzione": [
+                    r'(?:Data (?:di )?costituzione|Costituita il|'
+                    r'Data iscrizione)[:\s]+([^\n]+)'
+                ],
+                "sede_legale": [
+                    r'(?:Sede legale|Indirizzo sede)[:\s]+([^\n]+)'
+                ],
+                "stato": [
+                    r'(?:Stato attività|Stato impresa|Status)[:\s]+([^\n]+)'
+                ]
+            }
+
+            for field, pats in patterns.items():
+                val = "N/D"
+                for pat in pats:
+                    m = re.search(pat, body_text, re.I)
+                    if m:
+                        val = m.group(1).strip()[:100]
+                        break
+                res[field] = val
+
+            await browser.close()
+
+            # Se tutti N/D non abbiamo trovato nulla di utile
+            filled = [
+                v for k, v in res.items()
+                if k != "found" and v != "N/D"
+            ]
+            if not filled:
+                return {"found": False, "reason": "nessun_dato_estratto"}
+
+            return res
+
     except Exception as e:
         return {"found": False, "error": str(e)}
-    finally:
-        if browser:
-            await browser.close()
 
 
 if __name__ == "__main__":
